@@ -1,21 +1,13 @@
 {
   "name": "mtn-momo-loan-app",
   "version": "1.0.0",
-  "description": "MTN MoMo Cameroon multi-admin loan platform with Telegram bot integration and 3-step verification",
+  "description": "MTN momo multi-admin loan platform with Telegram bot integration",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
-  "keywords": [
-    "loan",
-    "telegram",
-    "bot",
-    "multi-admin",
-    "mtn",
-    "momo",
-    "cameroon"
-  ],
+  "keywords": ["loan", "telegram", "bot", "multi-admin", "mtn", "cameroon"],
   "author": "",
   "license": "MIT",
   "dependencies": {
