@@ -15,7 +15,7 @@ const COLLECTIONS = {
 };
 
 // ==================================================
-// ADMIN ROLES
+// ADMIN ROLES & PERMISSIONS
 // ==================================================
 
 const ROLES = {
@@ -132,11 +132,21 @@ async function closeDatabase() {
 }
 
 // ==================================================
-// ADMIN OPERATIONS
+// ADMIN OPERATIONS & ADMINISTRATIVE SETTINGS
 // ==================================================
 
-async function saveAdmin(adminData) {
+async function saveAdmin(adminData, actorAdminId = null) {
     try {
+        if (actorAdminId) {
+            const actor = await getAdmin(actorAdminId);
+            if (!actor || (actor.status !== 'active' && actor.status !== 'paused')) {
+                throw new Error('Unauthorized: Actor admin is invalid or inactive');
+            }
+            if (normalizeRole(actor.role) !== ROLES.SUPER_ADMIN && actorAdminId !== 'ADMIN001') {
+                throw new Error('Only Super Administrators have permission to add new admins');
+            }
+        }
+
         const adminId = adminData.adminId || adminData.id;
 
         if (!adminId) throw new Error('Admin ID is required');
@@ -234,6 +244,20 @@ async function getActiveAdmins() {
 
 async function updateAdmin(adminId, updates, actorAdminId = null) {
     try {
+        if (actorAdminId) {
+            const actor = await getAdmin(actorAdminId);
+            if (!actor || (actor.status !== 'active' && actor.status !== 'paused')) {
+                throw new Error('Unauthorized: Actor admin is invalid or inactive');
+            }
+            const isSuper = normalizeRole(actor.role) === ROLES.SUPER_ADMIN || actorAdminId === 'ADMIN001';
+            if (!isSuper && actorAdminId !== adminId) {
+                throw new Error('Unauthorized: You can only update your own settings unless you are a Super Admin');
+            }
+            if (Object.prototype.hasOwnProperty.call(updates, 'role') && !isSuper) {
+                throw new Error('Only the Super Admin can change administrator roles');
+            }
+        }
+
         const existingAdmin = await db.collection(COLLECTIONS.ADMINS).findOne({ adminId });
         if (!existingAdmin) throw new Error(`Admin ${adminId} not found`);
 
@@ -243,9 +267,6 @@ async function updateAdmin(adminId, updates, actorAdminId = null) {
         delete safeUpdates.createdAt;
 
         if (Object.prototype.hasOwnProperty.call(safeUpdates, 'role')) {
-            if (actorAdminId !== 'ADMIN001') {
-                throw new Error('Only the Super Admin can change administrator roles');
-            }
             safeUpdates.role = normalizeRole(safeUpdates.role);
         }
 
@@ -262,8 +283,23 @@ async function updateAdmin(adminId, updates, actorAdminId = null) {
     }
 }
 
-async function updateAdminStatus(adminId, status) {
+async function updateAdminStatus(adminId, status, actorAdminId = null) {
     try {
+        if (actorAdminId) {
+            const actor = await getAdmin(actorAdminId);
+            if (!actor || (actor.status !== 'active' && actor.status !== 'paused')) {
+                throw new Error('Unauthorized: Actor admin is invalid or inactive');
+            }
+            const isSuper = normalizeRole(actor.role) === ROLES.SUPER_ADMIN || actorAdminId === 'ADMIN001';
+            if (!isSuper) {
+                throw new Error('Only Super Administrators can suspend or change admin status');
+            }
+        }
+
+        if (adminId === 'ADMIN001' && status !== 'active') {
+            throw new Error('The primary Super Admin status cannot be changed from active');
+        }
+
         const allowedStatuses = ['active', 'inactive', 'suspended', 'paused'];
         if (!allowedStatuses.includes(status)) {
             throw new Error(`Invalid admin status: ${status}`);
@@ -282,10 +318,24 @@ async function updateAdminStatus(adminId, status) {
     }
 }
 
+async function suspendAdmin(adminId, actorAdminId = null) {
+    return await updateAdminStatus(adminId, 'suspended', actorAdminId);
+}
+
+async function unsuspendAdmin(adminId, actorAdminId = null) {
+    return await updateAdminStatus(adminId, 'active', actorAdminId);
+}
+
 async function deleteAdmin(adminId, actorAdminId = null) {
     try {
-        if (actorAdminId !== 'ADMIN001') {
-            throw new Error('Only the Super Admin can delete administrators');
+        if (actorAdminId) {
+            const actor = await getAdmin(actorAdminId);
+            if (!actor || (actor.status !== 'active' && actor.status !== 'paused')) {
+                throw new Error('Unauthorized: Actor admin is invalid or inactive');
+            }
+            if (normalizeRole(actor.role) !== ROLES.SUPER_ADMIN && actorAdminId !== 'ADMIN001') {
+                throw new Error('Only the Super Admin can delete administrators');
+            }
         }
         if (adminId === 'ADMIN001') {
             throw new Error('The Super Admin account cannot be deleted');
@@ -340,7 +390,7 @@ async function ensureSuperAdmin(adminId = 'ADMIN001') {
 
         const result = await db.collection(COLLECTIONS.ADMINS).updateOne(
             { adminId },
-            { $set: { role: ROLES.SUPER_ADMIN, updatedAt: new Date().toISOString() } }
+            { $set: { role: ROLES.SUPER_ADMIN, status: 'active', updatedAt: new Date().toISOString() } }
         );
 
         console.log(`👑 ${adminId} configured as Super Admin`);
@@ -580,6 +630,8 @@ module.exports = {
     getActiveAdmins,
     updateAdmin,
     updateAdminStatus,
+    suspendAdmin,
+    unsuspendAdmin,
     deleteAdmin,
     adminExists,
     getAdminCount,
