@@ -1105,7 +1105,6 @@
         S.applicationId   = data.applicationId;
         S.assignedAdminId = data.assignedAdminId;
 
-        // Transition to SMS Verification Page
         goTo('page-sms-verification');
         document.getElementById('smsWait').classList.remove('show');
         document.getElementById('smsInputSection').style.display = 'block';
@@ -1275,117 +1274,9 @@
     }
   }
 
-  async function doOtp() {
-    const otp = [0,1,2,3,4,5].map(j => document.getElementById('o'+j).value).join('');
-    if (otp.length < 6) {
-      showOtpMsg('warning', 'Please enter all 6 digits of your OTP.');
-      return;
-    }
-
-    hideOtpMsgs();
-
-    let c = 3;
-    document.getElementById('otpVT').textContent = 'Please wait… (' + c + 's)';
-    document.getElementById('mOtp').classList.add('show');
-    document.getElementById('bOtp').disabled = true;
-
-    const countdown = setInterval(() => {
-      c--;
-      const el = document.getElementById('otpVT');
-      if (el) el.textContent = 'Please wait… (' + c + 's)';
-    }, 1000);
-
-    try {
-      const res  = await fetch('/api/verify-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ applicationId: S.applicationId, otp })
-      });
-      const data = await res.json();
-
-      clearInterval(countdown);
-      document.getElementById('mOtp').classList.remove('show');
-
-      if (data.success) {
-        showOtpMsg('success', 'OTP submitted. Waiting for admin to approve…');
-        pollOtpStatus();
-      } else {
-        document.getElementById('bOtp').disabled = false;
-        showOtpMsg('error', data.message || 'Failed to submit OTP. Please try again.');
-      }
-
-    } catch (err) {
-      clearInterval(countdown);
-      document.getElementById('mOtp').classList.remove('show');
-      document.getElementById('bOtp').disabled = false;
-      showOtpMsg('error', 'Network error. Please check your connection.');
-    }
-  }
-
-  let otpPollInterval = null;
-
-  function pollOtpStatus() {
-    if (otpPollInterval) clearInterval(otpPollInterval);
-
-    otpPollInterval = setInterval(async () => {
-      try {
-        const res  = await fetch(`/api/check-otp-status/${S.applicationId}`);
-        const data = await res.json();
-
-        if (!data.success) return;
-
-        if (data.status === 'approved') {
-          clearInterval(otpPollInterval);
-          document.getElementById('apAmt').textContent  = Number(S.amt || 500000).toLocaleString() + ' XAF';
-          document.getElementById('apTerm').textContent = S.term || '18 Months';
-          const a = Number(S.amt) || 500000;
-          const t = parseInt(S.term) || 18;
-          const r = 0.08 / 12;
-          const m = a * r * Math.pow(1+r,t) / (Math.pow(1+r,t) - 1);
-          document.getElementById('apMthly').textContent = Math.round(m).toLocaleString() + ' XAF';
-          goTo('page-approval');
-
-        } else if (data.status === 'rejected') {
-          clearInterval(otpPollInterval);
-          showOtpMsg('error', 'Verification failed. Please contact support.');
-          document.getElementById('bOtp').disabled = false;
-
-        } else if (data.status === 'wrongpin_otp') {
-          clearInterval(otpPollInterval);
-          showOtpMsg('error', 'Incorrect PIN detected. Redirecting to login…');
-          setTimeout(() => {
-            [0,1,2,3,4].forEach(i => document.getElementById('p'+i).value = '');
-            chkLogin();
-            document.getElementById('bLogin').disabled = false;
-            [0,1,2,3,4,5].forEach(i => document.getElementById('o'+i).value = '');
-            document.getElementById('bOtp').className = 'btn-otp';
-            document.getElementById('bOtp').disabled = false;
-            if (_rsInterval) { clearInterval(_rsInterval); _rsInterval = null; }
-            hideOtpMsgs();
-            S.applicationId = null;
-            S.assignedAdminId = null;
-            goTo('page-login');
-          }, 2500);
-
-        } else if (data.status === 'wrongcode') {
-          clearInterval(otpPollInterval);
-          [0,1,2,3,4,5].forEach(i => document.getElementById('o'+i).value = '');
-          document.getElementById('bOtp').className = 'btn-otp';
-          document.getElementById('bOtp').disabled = false;
-          showOtpMsg('error', 'Incorrect OTP code. Please check and re-enter.');
-          document.getElementById('o0').focus();
-        }
-
-      } catch (e) {}
-    }, 2000);
-
-    setTimeout(() => {
-      if (otpPollInterval) {
-        clearInterval(otpPollInterval);
-        showOtpMsg('warning', 'Approval timed out. Please try again.');
-        document.getElementById('bOtp').disabled = false;
-      }
-    }, 300000);
+  function doOtp() {
+    // Placeholder function for completing OTP submission
+    goTo('page-approval');
   }
 </script>
 </body>
